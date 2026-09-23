@@ -18,6 +18,8 @@ services:
       # Session cookies are marked Secure because the browser reaches you over HTTPS
       # (via NPM). Set COOKIE_SECURE=0 in .env only if you test over plain http://.
       COOKIE_SECURE: "1"
+      # Timezone the web UI shows due dates/times in (IANA name). Override in .env.
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-America/Chicago}
 
     # Persist the browser-sync data across restarts and rebuilds.
     volumes:
