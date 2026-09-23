@@ -2,3 +2,7 @@
 .env
 __pycache__/
 *.pyc
+
+# Assignments pushed in from the browser userscript
+pushed_assignments.json
+pushed_assignments.json.tmp

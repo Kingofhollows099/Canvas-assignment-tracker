@@ -22,6 +22,17 @@ Want to look around first? `python server.py --demo` serves sample data without 
 
 Options: `--port 8080`, `--host 0.0.0.0` (or the `PORT` / `HOST` variables in `.env`).
 
+### No API token? Use browser-sync mode
+
+If your school has disabled personal access tokens, run the tracker in **browser-sync**
+mode instead. A small Violentmonkey userscript reads the assignment data Canvas already
+loads onto your Grades page and pushes it to the tracker; submitted work drops off the
+list on its own. It uses no token and no login — see [`userscript/README.md`](userscript/README.md).
+
+```bash
+python server.py --source userscript
+```
+
 ### Getting a Canvas token
 
 In Canvas: **Account → Settings → Approved Integrations → + New Access Token**. Copy the token into `.env`.
@@ -29,8 +40,11 @@ Treat it like a password — it can do anything your Canvas account can. `.env` 
 
 ## How it works
 
-- `server.py` – a standard-library HTTP server. Serves the page from `static/` and one JSON endpoint,
-  `GET /api/assignments` (`?refresh=1` skips the cache).
+- `server.py` – a standard-library HTTP server. Serves the page from `static/` and a JSON API:
+  `GET /api/assignments` (`?refresh=1` skips the cache) and, in browser-sync mode, `POST /api/sync`
+  for the userscript to push assignments to.
+- `push_store.py` – validates and stores the assignments pushed from the browser (browser-sync mode).
+- `userscript/` – the Violentmonkey userscript and its setup guide for browser-sync mode.
 - `canvas_client.py` – calls Canvas' Planner API (`/api/v1/planner/items?filter=incomplete_items`), which covers
   every course in a single paginated request. It then drops anything that isn't graded work (calendar events,
   notes, pages), anything submitted, excused or graded, and anything you've marked done in the Canvas planner.

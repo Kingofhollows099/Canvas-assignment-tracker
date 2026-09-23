@@ -1,7 +1,8 @@
 """Canvas Assignment Tracker: a small web server with a calendar and a to-do view.
 
-Run:  python server.py            (reads CANVAS_BASE_URL / CANVAS_API_TOKEN)
-      python server.py --demo     (sample data, no Canvas account needed)
+Run:  python server.py                    (needs CANVAS_BASE_URL / CANVAS_API_TOKEN)
+      python server.py --source userscript (assignments pushed in from the browser)
+      python server.py --demo              (sample data, no Canvas account needed)
 """
 
 import argparse
@@ -17,9 +18,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import canvas_client
+from push_store import PushStore
 
 appDir = Path(__file__).resolve().parent
 staticDir = appDir / "static"
+
+# Requests over this many bytes are refused before we read the body.
+maxSyncBodyBytes = 4 * 1024 * 1024
 
 # Only these files are served, so no request path can reach anything else on disk.
 staticFiles = {
@@ -45,7 +50,7 @@ def loadDotEnv(envPath):
 
 
 class AssignmentCache:
-    """Keeps the last Canvas response for a few minutes so page loads stay fast
+    """Keeps the last assignment list for a few minutes so page loads stay fast
     and we don't hit Canvas' rate limits on every refresh."""
 
     def __init__(self, fetchFunction, ttlSeconds):
@@ -67,10 +72,33 @@ class AssignmentCache:
                 self.cachedAt = time.monotonic()
             return self.cachedPayload
 
+    def invalidate(self):
+        with self.cacheLock:
+            self.cachedPayload = None
+
+
+def isAllowedSyncOrigin(originHeader, allowedOrigin):
+    """True when a browser Origin may POST to /api/sync (used only for the CORS fallback)."""
+    if not originHeader:
+        return False
+    if allowedOrigin and originHeader == allowedOrigin:
+        return True
+    # Default: any Canvas-hosted page. The userscript's own path (GM_xmlhttpRequest)
+    # doesn't rely on this at all; it only matters for a plain-fetch fallback.
+    parsedOrigin = urlparse(originHeader)
+    return parsedOrigin.scheme == "https" and (
+        parsedOrigin.hostname == "instructure.com"
+        or (parsedOrigin.hostname or "").endswith(".instructure.com")
+    )
+
 
 class TrackerHandler(BaseHTTPRequestHandler):
     assignmentCache = None
-    isDemo = False
+    pushStore = None          # set only in userscript mode
+    mode = "canvas"
+    allowedOrigin = ""
+
+    # ---- reads ----
 
     def do_GET(self):
         parsedUrl = urlparse(self.path)
@@ -89,8 +117,62 @@ class TrackerHandler(BaseHTTPRequestHandler):
         except canvas_client.CanvasError as canvasError:
             self.sendJson(canvasError.statusCode, {"error": str(canvasError)})
             return
-        responsePayload["demo"] = self.isDemo
+        responsePayload["demo"] = self.mode == "demo"
+        responsePayload["mode"] = self.mode
         self.sendJson(HTTPStatus.OK, responsePayload)
+
+    # ---- writes (userscript sync) ----
+
+    def do_OPTIONS(self):
+        # CORS preflight for the plain-fetch fallback path.
+        if urlparse(self.path).path == "/api/sync":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.applyCorsHeaders()
+            self.end_headers()
+        else:
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/sync":
+            self.sendJson(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+        if self.pushStore is None:
+            self.sendJson(HTTPStatus.CONFLICT,
+                          {"error": "Server is not in userscript mode; start it with --source userscript."})
+            return
+
+        try:
+            contentLength = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            contentLength = 0
+        if contentLength <= 0 or contentLength > maxSyncBodyBytes:
+            self.sendJson(HTTPStatus.BAD_REQUEST, {"error": "Missing or oversized request body."})
+            return
+
+        try:
+            requestBody = json.loads(self.rfile.read(contentLength))
+            accepted, skipped = self.pushStore.sync(requestBody.get("assignments"))
+        except (json.JSONDecodeError, AttributeError):
+            self.sendJson(HTTPStatus.BAD_REQUEST, {"error": "Body must be JSON with an 'assignments' list."})
+            return
+        except ValueError as validationError:
+            self.sendJson(HTTPStatus.BAD_REQUEST, {"error": str(validationError)})
+            return
+
+        self.assignmentCache.invalidate()  # next page load reflects the sync immediately
+        self.sendJson(HTTPStatus.OK, {"accepted": accepted, "skipped": skipped})
+
+    # ---- helpers ----
+
+    def applyCorsHeaders(self):
+        originHeader = self.headers.get("Origin")
+        if isAllowedSyncOrigin(originHeader, self.allowedOrigin):
+            self.send_header("Access-Control-Allow-Origin", originHeader)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Max-Age", "86400")
 
     def sendJson(self, statusCode, payload):
         self.sendBytes(statusCode, json.dumps(payload).encode("utf-8"), "application/json")
@@ -100,6 +182,8 @@ class TrackerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", contentType)
         self.send_header("Content-Length", str(len(bodyBytes)))
         self.send_header("Cache-Control", "no-store")
+        if urlparse(self.path).path == "/api/sync":
+            self.applyCorsHeaders()
         self.end_headers()
         self.wfile.write(bodyBytes)
 
@@ -110,6 +194,38 @@ class TrackerHandler(BaseHTTPRequestHandler):
         super().log_message(format, *args)
 
 
+def chooseMode(parsedArgs):
+    """Resolve the effective data source from flags and environment."""
+    requested = parsedArgs.source
+    if parsedArgs.demo:
+        requested = "demo"
+    if requested == "auto":
+        if os.environ.get("CANVAS_DEMO") == "1":
+            return "demo"
+        if os.environ.get("CANVAS_API_TOKEN", "").strip():
+            return "canvas"
+        # No token (e.g. the school disabled them): accept pushes from the browser.
+        return "userscript"
+    return requested
+
+
+def buildCanvasFetch():
+    baseUrl = os.environ.get("CANVAS_BASE_URL", "").strip().rstrip("/")
+    apiToken = os.environ.get("CANVAS_API_TOKEN", "").strip()
+    if not baseUrl or not apiToken:
+        sys.exit("Canvas mode needs CANVAS_BASE_URL and CANVAS_API_TOKEN (in the environment or a .env "
+                 "file). If your school disabled tokens, use --source userscript. See README.md.")
+    if not baseUrl.startswith("https://"):
+        sys.exit("CANVAS_BASE_URL must start with https:// so your token isn't sent in the clear.")
+    lookbackDays = int(os.environ.get("CANVAS_LOOKBACK_DAYS", "14"))
+    horizonDays = int(os.environ.get("CANVAS_HORIZON_DAYS", "60"))
+
+    def fetchFunction():
+        return canvas_client.getIncompleteAssignments(baseUrl, apiToken, lookbackDays, horizonDays)
+
+    return fetchFunction
+
+
 def main():
     loadDotEnv(appDir / ".env")
 
@@ -117,32 +233,36 @@ def main():
     argParser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"),
                            help="Interface to bind (default 127.0.0.1: only this computer)")
     argParser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
-    argParser.add_argument("--demo", action="store_true", help="Serve sample data instead of calling Canvas")
+    argParser.add_argument("--source", choices=["auto", "canvas", "userscript", "demo"],
+                           default=os.environ.get("CANVAS_SOURCE", "auto"),
+                           help="Where assignments come from (default auto)")
+    argParser.add_argument("--demo", action="store_true", help="Shortcut for --source demo")
     parsedArgs = argParser.parse_args()
 
-    isDemo = parsedArgs.demo or os.environ.get("CANVAS_DEMO") == "1"
-    if isDemo:
-        fetchFunction = canvas_client.makeDemoAssignments
-    else:
-        baseUrl = os.environ.get("CANVAS_BASE_URL", "").strip().rstrip("/")
-        apiToken = os.environ.get("CANVAS_API_TOKEN", "").strip()
-        if not baseUrl or not apiToken:
-            sys.exit("Set CANVAS_BASE_URL and CANVAS_API_TOKEN (in the environment or a .env file), "
-                     "or run with --demo. See README.md.")
-        if not baseUrl.startswith("https://"):
-            sys.exit("CANVAS_BASE_URL must start with https:// so your token isn't sent in the clear.")
-        lookbackDays = int(os.environ.get("CANVAS_LOOKBACK_DAYS", "14"))
-        horizonDays = int(os.environ.get("CANVAS_HORIZON_DAYS", "60"))
+    mode = chooseMode(parsedArgs)
+    lookbackDays = int(os.environ.get("CANVAS_LOOKBACK_DAYS", "14"))
+    horizonDays = int(os.environ.get("CANVAS_HORIZON_DAYS", "60"))
 
-        def fetchFunction():
-            return canvas_client.getIncompleteAssignments(baseUrl, apiToken, lookbackDays, horizonDays)
+    if mode == "demo":
+        fetchFunction = canvas_client.makeDemoAssignments
+    elif mode == "userscript":
+        storePath = Path(os.environ.get("PUSH_STORE_PATH", appDir / "pushed_assignments.json"))
+        pushStore = PushStore(storePath, lookbackDays, max(horizonDays, 90))
+        TrackerHandler.pushStore = pushStore
+        fetchFunction = pushStore.getIncomplete
+    else:
+        fetchFunction = buildCanvasFetch()
 
     TrackerHandler.assignmentCache = AssignmentCache(fetchFunction, int(os.environ.get("CACHE_SECONDS", "300")))
-    TrackerHandler.isDemo = isDemo
+    TrackerHandler.mode = mode
+    TrackerHandler.allowedOrigin = os.environ.get("CANVAS_BASE_URL", "").strip().rstrip("/")
 
     httpServer = ThreadingHTTPServer((parsedArgs.host, parsedArgs.port), TrackerHandler)
     displayHost = "localhost" if parsedArgs.host in ("127.0.0.1", "0.0.0.0") else parsedArgs.host
-    print(f"Canvas Assignment Tracker{' (demo data)' if isDemo else ''} on http://{displayHost}:{parsedArgs.port}")
+    label = {"demo": " (demo data)", "userscript": " (browser sync)"}.get(mode, "")
+    print(f"Canvas Assignment Tracker{label} on http://{displayHost}:{parsedArgs.port}")
+    if mode == "userscript":
+        print("Waiting for the browser userscript to push assignments. See userscript/README.md.")
     try:
         httpServer.serve_forever()
     except KeyboardInterrupt:

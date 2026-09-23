@@ -3,7 +3,7 @@
 const refetchMs = 15 * 60 * 1000; // server caches for 5 min; poll Canvas lightly
 const rerenderMs = 60 * 1000;     // keeps "in 3h" labels and the "today" column current
 
-const state = { assignments: [], fetchedAt: null, demo: false, view: "calendar", error: null };
+const state = { assignments: [], fetchedAt: null, demo: false, mode: "canvas", view: "calendar", error: null };
 
 let tooltipAnchor = null; // element the tooltip is currently showing for
 
@@ -140,7 +140,10 @@ function renderTodo(now) {
 
   const sorted = state.assignments.slice().sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
   if (sorted.length === 0) {
-    root.append(el("p", "empty", "✓  Nothing outstanding. Enjoy it."));
+    const message = state.mode === "userscript"
+      ? "Nothing here yet. Open a course's Grades page in Canvas with the sync userscript installed to load your assignments."
+      : "✓  Nothing outstanding. Enjoy it.";
+    root.append(el("p", "empty", message));
     return;
   }
 
@@ -223,6 +226,7 @@ function statusSummary() {
   if (overdue) parts.push(`⚠ ${overdue} overdue`);
   parts.push(`updated ${updated}`);
   if (state.demo) parts.push("demo data");
+  else if (state.mode === "userscript") parts.push("browser sync");
   return parts.join(" · ");
 }
 
@@ -237,6 +241,7 @@ async function loadAssignments(forceRefresh = false) {
     state.assignments = payload.assignments;
     state.fetchedAt = payload.fetchedAt;
     state.demo = payload.demo;
+    state.mode = payload.mode || "canvas";
     state.error = null;
     render();
     setStatus(statusSummary());
