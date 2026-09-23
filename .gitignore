@@ -1,0 +1,4 @@
+# Holds your Canvas API token: never commit it.
+.env
+__pycache__/
+*.pyc
