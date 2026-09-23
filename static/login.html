@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Assignment Tracker</title>
+<style>
+  :root {
+    --backgroundCLR: #181825; --statusBG: #11111b; --OffBtnBackgroundCLR: #252535;
+    --dividerCLR: #2a2a3e; --spinbox-border: #333355; --OnBtnBackgroundCLR: #e94560;
+    --OnBtnForegroundCLR: #ffffff; --tooltip-fg: #dddddd; --radius-sm: 4px;
+    --font-mono: Consolas, "Cascadia Mono", Menlo, monospace;
+    --font-sans: "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: var(--backgroundCLR); color: var(--tooltip-fg);
+    font-family: var(--font-sans); font-size: 14px; padding: 16px;
+  }
+  .card {
+    width: 100%; max-width: 320px; background: var(--statusBG);
+    border-radius: var(--radius-sm); padding: 24px;
+  }
+  h1 { margin: 0 0 4px; font: 700 22px/1 var(--font-mono); color: var(--OnBtnForegroundCLR); }
+  p.sub { margin: 0 0 20px; font: 400 12px/1.4 var(--font-mono); opacity: .7; }
+  label { display: block; margin: 12px 0 4px; font: 700 11px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
+  input {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--spinbox-border);
+    border-radius: var(--radius-sm); background: var(--OffBtnBackgroundCLR);
+    color: var(--OnBtnForegroundCLR); font: 400 14px var(--font-sans);
+  }
+  input:focus { outline: 2px solid var(--OnBtnBackgroundCLR); outline-offset: 1px; }
+  button {
+    width: 100%; margin-top: 20px; padding: 10px; border: 0; cursor: pointer;
+    border-radius: var(--radius-sm); background: var(--OnBtnBackgroundCLR);
+    color: var(--OnBtnForegroundCLR); font: 700 14px var(--font-mono);
+  }
+  .error { margin-top: 14px; padding: 8px 10px; border-radius: var(--radius-sm);
+    background: var(--OffBtnBackgroundCLR); font: 400 12px/1.4 var(--font-mono);
+    color: var(--OnBtnBackgroundCLR); }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<form class="card" method="POST" action="/login" autocomplete="on">
+  <h1>Assignments</h1>
+  <p class="sub">Sign in to continue.</p>
+  <label for="username">Username</label>
+  <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <div class="error" id="error" hidden>⚠  Wrong username or password.</div>
+  <button type="submit">Sign in</button>
+</form>
+<script>
+  // Show messages passed back via the query string, without echoing anything user-supplied.
+  const params = new URLSearchParams(location.search);
+  const error = document.getElementById("error");
+  if (params.get("error") === "throttled") {
+    error.textContent = "⚠  Too many attempts. Wait a few minutes and try again.";
+    error.hidden = false;
+  } else if (params.has("error")) {
+    error.hidden = false;
+  }
+</script>
+</body>
+</html>

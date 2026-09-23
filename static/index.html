@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assignment Tracker</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="toolbar">
+  <span class="brand">Assignments</span>
+  <span class="divider" aria-hidden="true"></span>
+  <nav class="view-toggles" aria-label="View">
+    <button type="button" class="toggle" data-view="calendar" aria-label="Calendar view"
+            data-tip="Calendar&#10;Today and the next 6 days, by due time">📅</button>
+    <button type="button" class="toggle" data-view="todo" aria-label="To-do list view"
+            data-tip="To-do&#10;Everything outstanding, soonest due first">📋</button>
+  </nav>
+  <span class="divider" aria-hidden="true"></span>
+  <button type="button" class="run" id="refresh" aria-label="Refresh from Canvas"
+          data-tip="Refresh&#10;Fetch the latest assignments from Canvas">↻</button>
+  <button type="button" class="toggle logout" id="logout" aria-label="Sign out"
+          data-tip="Sign out&#10;End your session" hidden>⎋</button>
+</header>
+
+<main id="main">
+  <section id="calendar-view" class="calendar" aria-label="Next 7 days" hidden></section>
+  <section id="todo-view" class="todo" aria-label="To-do list" hidden></section>
+</main>
+
+<footer class="status" id="status" role="status">Loading...</footer>
+
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
