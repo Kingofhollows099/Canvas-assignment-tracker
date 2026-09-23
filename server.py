@@ -101,6 +101,16 @@ def isAllowedSyncOrigin(originHeader, allowedOrigin):
     )
 
 
+# Sent on every response. A strict CSP means injected inline script can't run and
+# the app can't be framed (clickjacking). 'unsafe-inline' is allowed for styles only
+# (the pages use <style> blocks); scripts must be same-origin files.
+contentSecurityPolicy = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
 class TrackerHandler(BaseHTTPRequestHandler):
     assignmentCache = None
     pushStore = None          # set only in userscript mode
@@ -108,6 +118,11 @@ class TrackerHandler(BaseHTTPRequestHandler):
     allowedOrigin = ""
     syncToken = ""            # shared bearer token required to POST /api/sync
     displayTimeZone = "America/Chicago"  # timezone the web UI shows due dates in
+    trustProxyForwarded = False  # only trust X-Forwarded-For behind a known proxy
+
+    # Don't advertise the Python/BaseHTTP version in the Server header.
+    server_version = "tracker"
+    sys_version = ""
 
     # Web-UI login
     authEnabled = False
@@ -126,6 +141,11 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 self.redirect("/")
             else:
                 self.sendBytes(HTTPStatus.OK, (staticDir / "login.html").read_bytes(), "text/html; charset=utf-8")
+            return
+
+        if path == "/login.js":
+            # The login page's script, reachable without a session so the page works.
+            self.sendBytes(HTTPStatus.OK, (staticDir / "login.js").read_bytes(), "text/javascript; charset=utf-8")
             return
 
         if path == "/api/assignments":
@@ -193,8 +213,9 @@ class TrackerHandler(BaseHTTPRequestHandler):
             return
         try:
             accepted, skipped = self.pushStore.sync(requestBody.get("assignments"))
-        except (AttributeError, ValueError) as syncError:
-            self.sendJson(HTTPStatus.BAD_REQUEST, {"error": str(syncError) or "Bad request body."})
+        except (AttributeError, ValueError, TypeError, RecursionError):
+            # Never let malformed/hostile input crash the request thread.
+            self.sendJson(HTTPStatus.BAD_REQUEST, {"error": "Bad request body."})
             return
 
         self.assignmentCache.invalidate()  # next page load reflects the sync immediately
@@ -264,10 +285,14 @@ class TrackerHandler(BaseHTTPRequestHandler):
         return hmac.compare_digest(authHeader[len(prefix):], self.syncToken)
 
     def clientKey(self):
-        # Behind a reverse proxy the real client is in X-Forwarded-For's first hop.
-        forwarded = self.headers.get("X-Forwarded-For", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        # X-Forwarded-For is client-controllable unless a trusted proxy sets it, so we
+        # only honor it when TRUST_PROXY_XFF is on. Otherwise key on the real socket
+        # peer. (Behind a proxy without the flag, all logins share the proxy's IP, which
+        # simply makes the throttle global — still safe for a single-user tool.)
+        if self.trustProxyForwarded:
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
         return self.client_address[0] if self.client_address else "unknown"
 
     def buildSessionCookie(self, token, expire=False):
@@ -310,11 +335,18 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
     # ---- response helpers ----
 
+    def addSecurityHeaders(self):
+        self.send_header("Content-Security-Policy", contentSecurityPolicy)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def redirect(self, location, setCookie=None):
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
         if setCookie:
             self.send_header("Set-Cookie", setCookie)
+        self.addSecurityHeaders()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -335,6 +367,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", contentType)
         self.send_header("Content-Length", str(len(bodyBytes)))
         self.send_header("Cache-Control", "no-store")
+        self.addSecurityHeaders()
         if urlparse(self.path).path == "/api/sync":
             self.applyCorsHeaders()
         self.end_headers()
@@ -413,6 +446,10 @@ def configureAuth(parsedArgs):
     # Cookies are marked Secure by default (the browser reaches us over HTTPS via the
     # reverse proxy). Set COOKIE_SECURE=0 only for plain-HTTP local testing.
     TrackerHandler.cookieSecure = os.environ.get("COOKIE_SECURE", "1") != "0"
+    # Only trust X-Forwarded-For for throttling when explicitly behind a proxy that
+    # overwrites it; otherwise it's client-spoofable and would let attackers dodge the
+    # login throttle.
+    TrackerHandler.trustProxyForwarded = os.environ.get("TRUST_PROXY_XFF", "0") == "1"
     return authEnabled
 
 

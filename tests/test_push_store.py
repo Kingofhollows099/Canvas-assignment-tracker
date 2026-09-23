@@ -124,3 +124,26 @@ class StatusUpdateAndCourseTests(unittest.TestCase):
         self.store.sync([{"id": "assignment-2", "dueAt": isoIn(1, self.now),
                           "course": "CS 350", "courseId": "42"}], now=self.now)
         self.assertEqual(self.store.getIncomplete(now=self.now)[0]["courseId"], "42")
+
+
+class UrlValidationTests(unittest.TestCase):
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+
+    def setUp(self):
+        self.tempDir = tempfile.TemporaryDirectory()
+        self.store = PushStore(Path(self.tempDir.name) / "s.json", lookbackDays=14, horizonDays=90)
+
+    def tearDown(self):
+        self.tempDir.cleanup()
+
+    def _pushWithUrl(self, url):
+        self.store.sync([{"id": "assignment-1", "dueAt": isoIn(1, self.now), "url": url}], now=self.now)
+        return self.store.getIncomplete(now=self.now)[0]["url"]
+
+    def test_https_and_http_urls_kept(self):
+        self.assertEqual(self._pushWithUrl("https://x.instructure.com/a/1"), "https://x.instructure.com/a/1")
+        self.assertEqual(self._pushWithUrl("http://localhost/a/1"), "http://localhost/a/1")
+
+    def test_dangerous_or_odd_schemes_dropped(self):
+        for bad in ("javascript:alert(1)", "data:text/html,x", "/relative/path", "ftp://h/x", "  https://x"):
+            self.assertIsNone(self._pushWithUrl(bad), f"should reject {bad!r}")

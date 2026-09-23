@@ -38,6 +38,14 @@ def coercePoints(value):
     return None
 
 
+def coerceUrl(value):
+    """Accept only http(s) URLs, so a stored link can't carry a javascript: payload."""
+    url = coerceString(value)
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return None
+
+
 def normalizeFullItem(rawItem):
     """Validate a full item (with a due date) from the userscript, or return None."""
     if not isinstance(rawItem, dict):
@@ -61,7 +69,7 @@ def normalizeFullItem(rawItem):
         "points": coercePoints(rawItem.get("points")),
         "submitted": bool(rawItem.get("submitted")),
         "missing": bool(rawItem.get("missing")),
-        "url": coerceString(rawItem.get("url")) or None,
+        "url": coerceUrl(rawItem.get("url")),
     }
 
 

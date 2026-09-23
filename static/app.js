@@ -94,11 +94,14 @@ function setStatus(text) {
 // ---------- shared card ----------
 
 function makeCard(item, now, { showTime = true } = {}) {
-  const card = el(item.url ? "a" : "div", "card");
-  if (item.url) {
-    card.href = item.url;
+  // Only ever treat http(s) links as clickable, so a bad value can't become a
+  // javascript: link. (The server validates too; this is defense in depth.)
+  const safeUrl = (typeof item.url === "string" && /^https?:\/\//i.test(item.url)) ? item.url : null;
+  const card = el(safeUrl ? "a" : "div", "card");
+  if (safeUrl) {
+    card.href = safeUrl;
     card.target = "_blank";
-    card.rel = "noopener";
+    card.rel = "noopener noreferrer";
   }
   const dueDate = new Date(item.dueAt);
   const isPast = dueDate < now;
@@ -114,7 +117,7 @@ function makeCard(item, now, { showTime = true } = {}) {
 
   const tipLines = [item.title, `Due ${longDayFmt.format(dueDate)}, ${timeFmt.format(dueDate)} (${relativeDue(dueDate, now)})`];
   if (item.missing) tipLines.push("Marked missing in Canvas.");
-  if (item.url) tipLines.push("Click to open in Canvas.");
+  if (safeUrl) tipLines.push("Click to open in Canvas.");
   card.dataset.tip = tipLines.join("\n");
   return card;
 }
