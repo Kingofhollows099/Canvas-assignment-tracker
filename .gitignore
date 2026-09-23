@@ -6,3 +6,7 @@ __pycache__/
 # Assignments pushed in from the browser userscript
 pushed_assignments.json
 pushed_assignments.json.tmp
+
+# Browser-sync secrets: the shared token and the self-signed TLS certificate
+.sync_token
+certs/

@@ -6,6 +6,7 @@ Run:  python server.py                    (needs CANVAS_BASE_URL / CANVAS_API_TO
 """
 
 import argparse
+import hmac
 import json
 import os
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import canvas_client
+import tls_setup
 from push_store import PushStore
 
 appDir = Path(__file__).resolve().parent
@@ -97,6 +99,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
     pushStore = None          # set only in userscript mode
     mode = "canvas"
     allowedOrigin = ""
+    syncToken = ""            # shared bearer token required to POST /api/sync
 
     # ---- reads ----
 
@@ -141,6 +144,9 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self.sendJson(HTTPStatus.CONFLICT,
                           {"error": "Server is not in userscript mode; start it with --source userscript."})
             return
+        if not self.isAuthorized():
+            self.sendJson(HTTPStatus.UNAUTHORIZED, {"error": "Missing or wrong sync token."})
+            return
 
         try:
             contentLength = int(self.headers.get("Content-Length", "0"))
@@ -165,13 +171,23 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
     # ---- helpers ----
 
+    def isAuthorized(self):
+        """Constant-time check of the Authorization: Bearer <token> header."""
+        if not self.syncToken:
+            return False
+        authHeader = self.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if not authHeader.startswith(prefix):
+            return False
+        return hmac.compare_digest(authHeader[len(prefix):], self.syncToken)
+
     def applyCorsHeaders(self):
         originHeader = self.headers.get("Origin")
         if isAllowedSyncOrigin(originHeader, self.allowedOrigin):
             self.send_header("Access-Control-Allow-Origin", originHeader)
             self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
             self.send_header("Access-Control-Max-Age", "86400")
 
     def sendJson(self, statusCode, payload):
@@ -237,12 +253,17 @@ def main():
                            default=os.environ.get("CANVAS_SOURCE", "auto"),
                            help="Where assignments come from (default auto)")
     argParser.add_argument("--demo", action="store_true", help="Shortcut for --source demo")
+    argParser.add_argument("--tls", dest="tls", action="store_true", default=None,
+                           help="Serve over HTTPS (default on in userscript mode)")
+    argParser.add_argument("--no-tls", dest="tls", action="store_false",
+                           help="Serve over plain HTTP (not recommended for browser sync)")
     parsedArgs = argParser.parse_args()
 
     mode = chooseMode(parsedArgs)
     lookbackDays = int(os.environ.get("CANVAS_LOOKBACK_DAYS", "14"))
     horizonDays = int(os.environ.get("CANVAS_HORIZON_DAYS", "60"))
 
+    syncToken = ""
     if mode == "demo":
         fetchFunction = canvas_client.makeDemoAssignments
     elif mode == "userscript":
@@ -250,19 +271,43 @@ def main():
         pushStore = PushStore(storePath, lookbackDays, max(horizonDays, 90))
         TrackerHandler.pushStore = pushStore
         fetchFunction = pushStore.getIncomplete
+        syncToken = tls_setup.ensureSyncToken(appDir / ".sync_token")
     else:
         fetchFunction = buildCanvasFetch()
 
     TrackerHandler.assignmentCache = AssignmentCache(fetchFunction, int(os.environ.get("CACHE_SECONDS", "300")))
     TrackerHandler.mode = mode
     TrackerHandler.allowedOrigin = os.environ.get("CANVAS_BASE_URL", "").strip().rstrip("/")
+    TrackerHandler.syncToken = syncToken
+
+    # TLS is on by default whenever the browser userscript will be talking to us,
+    # so all traffic between it and this server is encrypted.
+    useTls = parsedArgs.tls if parsedArgs.tls is not None else (mode == "userscript")
+    sslContext = None
+    if useTls:
+        try:
+            certPath, keyPath = tls_setup.ensureCertificate(appDir / "certs" / "localhost.crt",
+                                                            appDir / "certs" / "localhost.key")
+            sslContext = tls_setup.buildServerSslContext(certPath, keyPath)
+        except tls_setup.TlsSetupError as tlsError:
+            sys.exit(f"Could not enable HTTPS: {tlsError}\nOr run with --no-tls to serve over plain HTTP.")
 
     httpServer = ThreadingHTTPServer((parsedArgs.host, parsedArgs.port), TrackerHandler)
+    if sslContext is not None:
+        httpServer.socket = sslContext.wrap_socket(httpServer.socket, server_side=True)
+
+    scheme = "https" if sslContext is not None else "http"
     displayHost = "localhost" if parsedArgs.host in ("127.0.0.1", "0.0.0.0") else parsedArgs.host
+    baseAddress = f"{scheme}://{displayHost}:{parsedArgs.port}"
     label = {"demo": " (demo data)", "userscript": " (browser sync)"}.get(mode, "")
-    print(f"Canvas Assignment Tracker{label} on http://{displayHost}:{parsedArgs.port}")
+    print(f"Canvas Assignment Tracker{label} on {baseAddress}")
     if mode == "userscript":
-        print("Waiting for the browser userscript to push assignments. See userscript/README.md.")
+        print("\nBrowser-sync setup (see userscript/README.md):")
+        if scheme == "https":
+            print(f"  1. Open {baseAddress} once and trust the self-signed certificate.")
+        print(f"  2. In the userscript, set  trackerBase = \"{baseAddress}\"")
+        print(f"     and  syncToken  = \"{syncToken}\"")
+        print("  Then open a course's Grades or an assignment page in Canvas.\n")
     try:
         httpServer.serve_forever()
     except KeyboardInterrupt:

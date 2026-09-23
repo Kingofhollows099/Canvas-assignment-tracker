@@ -26,11 +26,16 @@ Options: `--port 8080`, `--host 0.0.0.0` (or the `PORT` / `HOST` variables in `.
 
 If your school has disabled personal access tokens, run the tracker in **browser-sync**
 mode instead. A small Violentmonkey userscript reads the assignment data Canvas already
-loads onto your Grades page and pushes it to the tracker; submitted work drops off the
-list on its own. It uses no token and no login — see [`userscript/README.md`](userscript/README.md).
+loads onto your **Grades pages and individual assignment pages** and pushes it to the
+tracker; submitting an assignment updates it immediately, and submitted work drops off
+the list on its own. It uses no Canvas token and no login.
+
+Traffic between the userscript and the server is encrypted with TLS and signed with a
+shared token, both generated automatically on first run (kept in `certs/` and
+`.sync_token`, git-ignored). Full walkthrough: [`userscript/README.md`](userscript/README.md).
 
 ```bash
-python server.py --source userscript
+python server.py --source userscript   # prints its https address and your sync token
 ```
 
 ### Getting a Canvas token
@@ -43,7 +48,10 @@ Treat it like a password — it can do anything your Canvas account can. `.env` 
 - `server.py` – a standard-library HTTP server. Serves the page from `static/` and a JSON API:
   `GET /api/assignments` (`?refresh=1` skips the cache) and, in browser-sync mode, `POST /api/sync`
   for the userscript to push assignments to.
-- `push_store.py` – validates and stores the assignments pushed from the browser (browser-sync mode).
+- `push_store.py` – validates and stores the assignments pushed from the browser, keyed by
+  Canvas assignment id, with each item's course id and name (browser-sync mode).
+- `tls_setup.py` – generates the self-signed localhost certificate and the shared sync token
+  that encrypt and authenticate browser-sync traffic.
 - `userscript/` – the Violentmonkey userscript and its setup guide for browser-sync mode.
 - `canvas_client.py` – calls Canvas' Planner API (`/api/v1/planner/items?filter=incomplete_items`), which covers
   every course in a single paginated request. It then drops anything that isn't graded work (calendar events,
@@ -59,6 +67,9 @@ Treat it like a password — it can do anything your Canvas account can. `.env` 
   browser; only the server talks to Canvas.
 - `CANVAS_BASE_URL` must be `https://`, and the client refuses to follow a pagination link to any other host, so the
   token is only ever sent to your Canvas instance.
+- In browser-sync mode the server serves over HTTPS (self-signed localhost certificate) and requires a shared bearer
+  token on `/api/sync`, so traffic to and from the userscript is encrypted and only your userscript can post. The
+  `/api/sync` CORS allowance is scoped to `*.instructure.com` origins.
 
 ## Tests
 

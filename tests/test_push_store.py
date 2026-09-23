@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from push_store import PushStore, normalizePushedItem, parseIso
+from push_store import PushStore, normalizeFullItem, parseIso
 
 
 def isoIn(days, now):
@@ -12,12 +12,12 @@ def isoIn(days, now):
 
 class NormalizeTests(unittest.TestCase):
     def test_requires_id_and_due(self):
-        self.assertIsNone(normalizePushedItem({"id": "a-1"}))
-        self.assertIsNone(normalizePushedItem({"dueAt": "2026-09-24T00:00:00Z"}))
-        self.assertIsNone(normalizePushedItem("not a dict"))
+        self.assertIsNone(normalizeFullItem({"id": "a-1"}))
+        self.assertIsNone(normalizeFullItem({"dueAt": "2026-09-24T00:00:00Z"}))
+        self.assertIsNone(normalizeFullItem("not a dict"))
 
     def test_coerces_and_defaults(self):
-        item = normalizePushedItem({"id": "assignment-1", "dueAt": "2026-09-24T00:00:00Z",
+        item = normalizeFullItem({"id": "assignment-1", "dueAt": "2026-09-24T00:00:00Z",
                                     "type": "bogus", "points": True, "title": 5})
         self.assertEqual(item["type"], "assignment")   # unknown type falls back
         self.assertIsNone(item["points"])              # bool is not a valid points value
@@ -85,3 +85,42 @@ class ParseIsoTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusUpdateAndCourseTests(unittest.TestCase):
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+
+    def setUp(self):
+        self.tempDir = tempfile.TemporaryDirectory()
+        self.store = PushStore(Path(self.tempDir.name) / "s.json", lookbackDays=14, horizonDays=90)
+
+    def tearDown(self):
+        self.tempDir.cleanup()
+
+    def test_status_only_update_flips_existing_without_due_date(self):
+        # A grades-page push creates the item...
+        self.store.sync([{"id": "assignment-1", "dueAt": isoIn(2, self.now),
+                          "course": "MATH 241", "courseId": "10"}], now=self.now)
+        self.assertEqual(len(self.store.getIncomplete(now=self.now)), 1)
+        # ...then the assignment page (no due date read) flips it submitted.
+        accepted, skipped = self.store.sync([{"id": "assignment-1", "submitted": True}], now=self.now)
+        self.assertEqual((accepted, skipped), (1, 0))
+        self.assertEqual(self.store.getIncomplete(now=self.now), [])
+
+    def test_status_only_update_for_unknown_item_is_skipped(self):
+        accepted, skipped = self.store.sync([{"id": "assignment-999", "submitted": True}], now=self.now)
+        self.assertEqual((accepted, skipped), (0, 1))
+
+    def test_course_name_backfilled_across_pushes(self):
+        # Assignment page knows the course id but not (yet) the name.
+        self.store.sync([{"id": "assignment-2", "dueAt": isoIn(1, self.now), "courseId": "10"}], now=self.now)
+        # Grades page later supplies the name for course 10.
+        self.store.sync([{"id": "assignment-3", "dueAt": isoIn(1, self.now),
+                          "course": "PHYS 201", "courseId": "10"}], now=self.now)
+        byId = {item["id"]: item for item in self.store.getIncomplete(now=self.now)}
+        self.assertEqual(byId["assignment-2"]["course"], "PHYS 201")
+
+    def test_course_id_is_preserved(self):
+        self.store.sync([{"id": "assignment-2", "dueAt": isoIn(1, self.now),
+                          "course": "CS 350", "courseId": "42"}], now=self.now)
+        self.assertEqual(self.store.getIncomplete(now=self.now)[0]["courseId"], "42")
