@@ -72,6 +72,9 @@ these pushes:
 - Open any course's **Grades** page, or any **assignment** page, in Canvas.
 - A raspberry pill appears bottom-right and syncs automatically; click it to sync
   again. It shows how many it sent and how many are already done.
+- **Drag the pill** anywhere you like — its position is remembered across pages and
+  reloads. To lock it to fixed coordinates instead, set `pillFixedPos` at the top of
+  the script.
 - Submit an assignment and it updates the tracker right away.
 - Refresh the tracker tab (or press ↻) to see the change.
 

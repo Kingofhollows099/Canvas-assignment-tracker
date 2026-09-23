@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Canvas Assignment Tracker Sync
 // @namespace    canvas-assignment-tracker
-// @version      2.2.0
+// @version      2.3.0
 // @description  Reads the assignments Canvas already loaded on your grades and assignment pages and pushes them, encrypted, to your local Assignment Tracker. Submitting an assignment updates it immediately.
 // @match        https://*.instructure.com/courses/*/grades*
 // @match        https://*.instructure.com/courses/*/assignments/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @connect      *
 // @noframes
 // ==/UserScript==
@@ -26,6 +28,11 @@
  */
 const trackerBase = "https://localhost:8000";   // your tracker's URL (e.g. https://tracker.yourdomain.com)
 const syncToken = "PASTE_YOUR_SYNC_TOKEN_HERE"; // the SYNC_TOKEN the server/.env uses
+
+// The sync button is draggable and remembers where you put it. To force a fixed
+// spot instead, set pillFixedPos to {left, top} in pixels (e.g. {left: 20, top: 20});
+// leave it null to drag-and-remember.
+const pillFixedPos = null;
 
 "use strict";
 
@@ -264,20 +271,111 @@ function pushItems(items) {
   });
 }
 
-// ---------- small on-page status pill ----------
+// ---------- small on-page status pill (draggable, position remembered) ----------
+
+const pillPosKey = "catracker_pill_pos";
+
+function loadPillPos() {
+  if (pillFixedPos) return pillFixedPos;
+  try {
+    if (typeof GM_getValue === "function") {
+      const stored = GM_getValue(pillPosKey);
+      if (stored) return JSON.parse(stored);
+    }
+  } catch (e) { /* ignore */ }
+  try {
+    const stored = localStorage.getItem(pillPosKey);
+    if (stored) return JSON.parse(stored);
+  } catch (e) { /* ignore */ }
+  return null;
+}
+
+function savePillPos(pos) {
+  if (pillFixedPos) return; // fixed by config: don't remember drags
+  const serialized = JSON.stringify(pos);
+  try { if (typeof GM_setValue === "function") GM_setValue(pillPosKey, serialized); } catch (e) { /* ignore */ }
+  try { localStorage.setItem(pillPosKey, serialized); } catch (e) { /* ignore */ }
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(value, max));
+}
+
+function placePill(node) {
+  const pos = loadPillPos();
+  if (pos && typeof pos.left === "number" && typeof pos.top === "number") {
+    // Keep it on-screen even if the window is now smaller than when it was saved.
+    const left = clamp(pos.left, 4, Math.max(4, window.innerWidth - node.offsetWidth - 4));
+    const top = clamp(pos.top, 4, Math.max(4, window.innerHeight - node.offsetHeight - 4));
+    Object.assign(node.style, { left: `${left}px`, top: `${top}px`, right: "auto", bottom: "auto" });
+  } else {
+    Object.assign(node.style, { right: "16px", bottom: "16px", left: "auto", top: "auto" });
+  }
+}
+
+// Drag to move; a plain click (no real movement) still runs a sync.
+function makeDraggable(node) {
+  let dragging = false, moved = false, startX = 0, startY = 0, originLeft = 0, originTop = 0;
+
+  node.addEventListener("pointerdown", (event) => {
+    if (pillFixedPos) return;      // position locked by config
+    if (event.button !== 0) return;
+    dragging = true;
+    moved = false;
+    const rect = node.getBoundingClientRect();
+    originLeft = rect.left;
+    originTop = rect.top;
+    startX = event.clientX;
+    startY = event.clientY;
+    // Switch from right/bottom anchoring to left/top so we can move it freely.
+    Object.assign(node.style, { left: `${rect.left}px`, top: `${rect.top}px`, right: "auto", bottom: "auto" });
+    try { node.setPointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+  });
+
+  node.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+    const left = clamp(originLeft + dx, 4, window.innerWidth - node.offsetWidth - 4);
+    const top = clamp(originTop + dy, 4, window.innerHeight - node.offsetHeight - 4);
+    node.style.left = `${left}px`;
+    node.style.top = `${top}px`;
+  });
+
+  const endDrag = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    node.dataset.justDragged = moved ? "1" : "";
+    if (moved) {
+      const rect = node.getBoundingClientRect();
+      savePillPos({ left: rect.left, top: rect.top });
+    }
+    try { node.releasePointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+  };
+  node.addEventListener("pointerup", endDrag);
+  node.addEventListener("pointercancel", endDrag);
+}
 
 let pillNode = null;
 function ensurePill() {
   if (pillNode) return pillNode;
   pillNode = document.createElement("button");
   Object.assign(pillNode.style, {
-    position: "fixed", right: "16px", bottom: "16px", zIndex: 99999,
-    padding: "8px 12px", borderRadius: "4px", border: "0", cursor: "pointer",
+    position: "fixed", zIndex: 99999,
+    padding: "8px 12px", borderRadius: "4px", border: "0",
+    cursor: pillFixedPos ? "pointer" : "grab", touchAction: "none",
     font: "700 12px/1 Consolas, monospace", color: "#ffffff", background: "#e94560",
   });
   pillNode.textContent = "Sync assignments";
-  pillNode.addEventListener("click", runSync);
+  pillNode.addEventListener("click", () => {
+    // Don't fire a sync when the click was actually the end of a drag.
+    if (pillNode.dataset.justDragged) { pillNode.dataset.justDragged = ""; return; }
+    runSync();
+  });
   document.body.appendChild(pillNode);
+  placePill(pillNode);
+  makeDraggable(pillNode);
   return pillNode;
 }
 
@@ -285,6 +383,7 @@ function setPill(text, background) {
   const pill = ensurePill();
   pill.textContent = text;
   if (background) pill.style.background = background;
+  placePill(pill); // re-clamp after width changes with the new text
 }
 
 const onGradesPage = () => /\/grades\/?$/.test(location.pathname);
