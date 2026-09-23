@@ -107,6 +107,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
     mode = "canvas"
     allowedOrigin = ""
     syncToken = ""            # shared bearer token required to POST /api/sync
+    displayTimeZone = "America/Chicago"  # timezone the web UI shows due dates in
 
     # Web-UI login
     authEnabled = False
@@ -152,6 +153,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
         responsePayload["demo"] = self.mode == "demo"
         responsePayload["mode"] = self.mode
         responsePayload["authEnabled"] = self.authEnabled
+        responsePayload["timeZone"] = self.displayTimeZone
         self.sendJson(HTTPStatus.OK, responsePayload)
 
     # ---- writes ----
@@ -462,6 +464,7 @@ def main():
     TrackerHandler.mode = mode
     TrackerHandler.allowedOrigin = os.environ.get("CANVAS_BASE_URL", "").strip().rstrip("/")
     TrackerHandler.syncToken = syncToken
+    TrackerHandler.displayTimeZone = os.environ.get("DISPLAY_TIMEZONE", "America/Chicago").strip() or "America/Chicago"
     authEnabled = configureAuth(parsedArgs)
 
     # TLS is on by default when the browser userscript talks to us directly, and off

@@ -59,7 +59,9 @@ Treat it like a password — it can do anything your Canvas account can. `.env` 
 - Responses are cached for 5 minutes so reloading the page doesn't hammer Canvas' rate limits; the ↻ button forces a
   fresh fetch. The page also refetches every 15 minutes and re-renders every minute, so "in 3h" labels stay current and
   the calendar rolls over at midnight.
-- Dates travel as UTC and are converted to your browser's local time zone for display.
+- Dates travel as UTC and are displayed in a fixed timezone set by `DISPLAY_TIMEZONE`
+  (an IANA name like `America/Chicago`, the default). This keeps due times correct no
+  matter what timezone the viewing device is set to; set it to your school's timezone.
 
 ### Security notes
 

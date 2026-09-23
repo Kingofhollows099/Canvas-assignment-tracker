@@ -3,15 +3,32 @@
 const refetchMs = 15 * 60 * 1000; // server caches for 5 min; poll Canvas lightly
 const rerenderMs = 60 * 1000;     // keeps "in 3h" labels and the "today" column current
 
-const state = { assignments: [], fetchedAt: null, demo: false, mode: "canvas", view: "calendar", error: null };
+const state = { assignments: [], fetchedAt: null, demo: false, mode: "canvas",
+                timeZone: "America/Chicago", view: "calendar", error: null };
 
 let tooltipAnchor = null; // element the tooltip is currently showing for
 
 const dayMs = 24 * 60 * 60 * 1000;
-const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const weekdayFmt = new Intl.DateTimeFormat(undefined, { weekday: "short" });
-const monthDayFmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-const longDayFmt = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric" });
+
+// The timezone all dates/times are shown in (set by the server, default US Central).
+// Times are formatted in it; day-cell labels are fed a noon-UTC "anchor" and read in
+// UTC, so the weekday/date shown is exactly the calendar day regardless of DST.
+let displayTz = state.timeZone;
+let timeFmt, longDayFmt, weekdayLabelFmt, monthDayLabelFmt;
+
+function buildFormatters() {
+  displayTz = state.timeZone;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: displayTz }); // throws on an unknown zone
+  } catch (e) {
+    displayTz = undefined; // fall back to the viewer's own timezone
+  }
+  timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: displayTz });
+  longDayFmt = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric", timeZone: displayTz });
+  weekdayLabelFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", timeZone: "UTC" });
+  monthDayLabelFmt = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+}
+buildFormatters();
 
 // ---------- small helpers ----------
 
@@ -22,16 +39,33 @@ function el(tag, className, text) {
   return node;
 }
 
-function startOfDay(date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+// Year/month/day of a moment as seen in the display timezone.
+function zoneYMD(date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: displayTz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(date);
+  const get = (type) => Number(parts.find((part) => part.type === type).value);
+  return { y: get("year"), m: get("month"), d: get("day") };
 }
 
-function addDays(date, days) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+// A stable anchor (noon UTC) for a calendar day, safe to add whole days to.
+function dayAnchor(y, m, d) {
+  return new Date(Date.UTC(y, m - 1, d, 12));
 }
 
-function dayKey(date) {
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+function anchorKey(anchor) {
+  return `${anchor.getUTCFullYear()}-${anchor.getUTCMonth() + 1}-${anchor.getUTCDate()}`;
+}
+
+function todayAnchor() {
+  const { y, m, d } = zoneYMD(new Date());
+  return dayAnchor(y, m, d);
+}
+
+// The calendar day an assignment falls on, in the display timezone.
+function dueAnchor(date) {
+  const { y, m, d } = zoneYMD(date);
+  return dayAnchor(y, m, d);
 }
 
 function relativeDue(dueDate, now) {
@@ -90,24 +124,24 @@ function makeCard(item, now, { showTime = true } = {}) {
 function renderCalendar(now) {
   const root = document.getElementById("calendar-view");
   root.replaceChildren();
-  const today = startOfDay(now);
+  const today = todayAnchor();
 
   const byDay = new Map();
   for (const item of state.assignments) {
-    const key = dayKey(new Date(item.dueAt));
+    const key = anchorKey(dueAnchor(new Date(item.dueAt)));
     if (!byDay.has(key)) byDay.set(key, []);
     byDay.get(key).push(item);
   }
 
   for (let offset = 0; offset < 7; offset++) {
-    const day = addDays(today, offset);
-    const items = (byDay.get(dayKey(day)) || []).slice().sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
+    const day = new Date(today.getTime() + offset * dayMs);
+    const items = (byDay.get(anchorKey(day)) || []).slice().sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
 
     const column = el("article", offset === 0 ? "day today" : "day");
     const head = el("header", "day-head");
     head.append(
-      el("span", "day-name", offset === 0 ? "Today" : weekdayFmt.format(day)),
-      el("span", "day-date", monthDayFmt.format(day)),
+      el("span", "day-name", offset === 0 ? "Today" : weekdayLabelFmt.format(day)),
+      el("span", "day-date", monthDayLabelFmt.format(day)),
     );
     if (items.length) head.append(el("span", "day-count", String(items.length)));
     column.append(head);
@@ -123,13 +157,13 @@ function renderCalendar(now) {
 // ---------- to-do view ----------
 
 function groupLabel(dueDate, now) {
-  const today = startOfDay(now);
-  const dueDay = startOfDay(dueDate);
+  const today = todayAnchor();
+  const dueDay = dueAnchor(dueDate);
   const dayDiff = Math.round((dueDay - today) / dayMs);
   if (dueDate < now) return "⚠ Overdue";
   if (dayDiff === 0) return "Today";
   if (dayDiff === 1) return "Tomorrow";
-  if (dayDiff < 7) return weekdayFmt.format(dueDate) + " " + monthDayFmt.format(dueDate);
+  if (dayDiff < 7) return weekdayLabelFmt.format(dueDay) + " " + monthDayLabelFmt.format(dueDay);
   if (dayDiff < 14) return "Next week";
   return "Later";
 }
@@ -171,7 +205,7 @@ function renderTodo(now) {
 
     const when = el("div", "todo-when", relativeDue(dueDate, now));
     if (dueDate < now || item.missing) when.prepend(el("span", "flag", "⚠ "));
-    when.append(el("small", null, `${monthDayFmt.format(dueDate)}, ${timeFmt.format(dueDate)}`));
+    when.append(el("small", null, `${monthDayLabelFmt.format(dueAnchor(dueDate))}, ${timeFmt.format(dueDate)}`));
 
     const main = el("div", "todo-main");
     main.append(title, course);
@@ -216,7 +250,7 @@ function setView(view) {
 function statusSummary() {
   const now = new Date();
   const overdue = state.assignments.filter((item) => new Date(item.dueAt) < now).length;
-  const weekEnd = addDays(startOfDay(now), 7);
+  const weekEnd = new Date(now.getTime() + 7 * dayMs);
   const thisWeek = state.assignments.filter((item) => {
     const due = new Date(item.dueAt);
     return due >= now && due < weekEnd;
@@ -247,6 +281,10 @@ async function loadAssignments(forceRefresh = false) {
     state.fetchedAt = payload.fetchedAt;
     state.demo = payload.demo;
     state.mode = payload.mode || "canvas";
+    if (payload.timeZone && payload.timeZone !== state.timeZone) {
+      state.timeZone = payload.timeZone;
+      buildFormatters();
+    }
     document.getElementById("logout").hidden = !payload.authEnabled;
     state.error = null;
     render();
