@@ -327,6 +327,7 @@ function makeDraggable(node) {
     originTop = rect.top;
     startX = event.clientX;
     startY = event.clientY;
+    showPill(); // keep it visible while dragging
     // Switch from right/bottom anchoring to left/top so we can move it freely.
     Object.assign(node.style, { left: `${rect.left}px`, top: `${rect.top}px`, right: "auto", bottom: "auto" });
     try { node.setPointerCapture(event.pointerId); } catch (e) { /* ignore */ }
@@ -357,6 +358,38 @@ function makeDraggable(node) {
   node.addEventListener("pointercancel", endDrag);
 }
 
+// After a few seconds of inactivity the pill fades out and is removed from the page
+// entirely, so it can never sit invisibly over a button and block clicks. It comes
+// back on its own the next time there's something to show (a sync or status update).
+const pillFadeMs = 5000;
+const pillFadeAnimMs = 500; // must match the CSS opacity transition below
+let fadeTimer = null;
+let removeTimer = null;
+
+function showPill() {
+  if (!pillNode) return;
+  if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
+  if (removeTimer) { clearTimeout(removeTimer); removeTimer = null; }
+  pillNode.style.opacity = "1";
+  pillNode.style.pointerEvents = "auto";
+}
+
+function removePill() {
+  if (pillNode && pillNode.parentNode) pillNode.parentNode.removeChild(pillNode);
+  pillNode = null;
+  fadeTimer = removeTimer = null;
+}
+
+function scheduleFade() {
+  showPill();
+  fadeTimer = setTimeout(() => {
+    if (!pillNode) return;
+    pillNode.style.opacity = "0";
+    pillNode.style.pointerEvents = "none"; // stop blocking clicks even during the fade
+    removeTimer = setTimeout(removePill, pillFadeAnimMs);
+  }, pillFadeMs);
+}
+
 let pillNode = null;
 function ensurePill() {
   if (pillNode) return pillNode;
@@ -366,6 +399,7 @@ function ensurePill() {
     padding: "8px 12px", borderRadius: "4px", border: "0",
     cursor: pillFixedPos ? "pointer" : "grab", touchAction: "none",
     font: "700 12px/1 Consolas, monospace", color: "#ffffff", background: "#e94560",
+    opacity: "1", transition: "opacity 0.5s ease",
   });
   pillNode.textContent = "Sync assignments";
   pillNode.addEventListener("click", () => {
@@ -376,6 +410,7 @@ function ensurePill() {
   document.body.appendChild(pillNode);
   placePill(pillNode);
   makeDraggable(pillNode);
+  scheduleFade();
   return pillNode;
 }
 
@@ -384,6 +419,7 @@ function setPill(text, background) {
   pill.textContent = text;
   if (background) pill.style.background = background;
   placePill(pill); // re-clamp after width changes with the new text
+  scheduleFade();  // reset the fade countdown on every status update
 }
 
 const onGradesPage = () => /\/grades\/?$/.test(location.pathname);

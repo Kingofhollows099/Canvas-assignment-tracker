@@ -75,6 +75,8 @@ these pushes:
 - **Drag the pill** anywhere you like — its position is remembered across pages and
   reloads. To lock it to fixed coordinates instead, set `pillFixedPos` at the top of
   the script.
+- The pill **fades out and removes itself after 5 seconds** so it never covers a
+  Canvas button; it reappears the next time it syncs or has a status to show.
 - Submit an assignment and it updates the tracker right away.
 - Refresh the tracker tab (or press ↻) to see the change.
 
