@@ -1,33 +1,34 @@
 // ==UserScript==
 // @name         Canvas Assignment Tracker Sync
 // @namespace    canvas-assignment-tracker
-// @version      2.0.0
+// @version      2.1.0
 // @description  Reads the assignments Canvas already loaded on your grades and assignment pages and pushes them, encrypted, to your local Assignment Tracker. Submitting an assignment updates it immediately.
 // @match        https://*.instructure.com/courses/*/grades*
 // @match        https://*.instructure.com/courses/*/assignments/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
-// @connect      localhost
-// @connect      127.0.0.1
+// @connect      *
 // @noframes
 // ==/UserScript==
 
 /*
  * This script runs in YOUR browser, only on grades and assignment pages you open
- * yourself. It reads window.ENV and the page's own contents — the data Canvas
- * already delivered to draw pages you're authorized to see — and sends
- * "assignment X, in course Y, due then, submitted or not" to your local tracker.
+ * yourself. It reads the assignment table Canvas rendered and window.ENV — data
+ * Canvas already delivered to draw pages you're authorized to see — and sends
+ * "assignment X, in course Y, due then, submitted or not" to your tracker.
  *
- * It stores no login and keeps no cookie. Traffic is encrypted with TLS (https)
- * and signed with a token only your tracker knows, so nothing else on your machine
- * can read or forge these pushes. If your tracker isn't running, pushes fail quietly.
+ * Traffic is signed with a token only your tracker knows. @connect is "*" so it can
+ * reach your tracker at whatever URL you host it (localhost or a public domain); the
+ * token is only ever sent to trackerBase, which you set below.
  *
- * ---- SET THESE TWO to what the server prints on startup ----
+ * ---- SET THESE TWO ----
  */
-const trackerBase = "https://localhost:8000"; // must match the scheme+port the server prints
-const syncToken = "PASTE_YOUR_SYNC_TOKEN_HERE";
+const trackerBase = "https://localhost:8000";   // your tracker's URL (e.g. https://tracker.yourdomain.com)
+const syncToken = "PASTE_YOUR_SYNC_TOKEN_HERE"; // the SYNC_TOKEN the server/.env uses
 
 "use strict";
+
+const debug = true; // logs a one-line summary to the browser console; set false to quiet it
 
 // ---------- generic helpers ----------
 
@@ -42,11 +43,12 @@ function assignmentIdFromUrl() {
 }
 
 function courseName(env) {
-  // Prefer Canvas' own value; fall back to the course crumb, which names the class.
+  // The visible course crumb is the most reliable name for the class.
   const crumb = document.querySelector("#breadcrumbs li:nth-of-type(2) .ellipsible");
   return (
-    (env && (env.COURSE_NAME || env.course_name || env.context_name)) ||
     (crumb && crumb.textContent.trim()) ||
+    (env && env.current_context && env.current_context.name) ||
+    (env && (env.COURSE_NAME || env.course_name || env.context_name)) ||
     ""
   );
 }
@@ -67,118 +69,169 @@ function assignmentType(assignment) {
   return "assignment";
 }
 
-// ---------- page: Grades (the whole-course list, from structured ENV data) ----------
+// ---------- page: Grades ----------
+// Names come from the rendered #grades_summary table; due dates, points and
+// submitted status come from window.ENV, matched to each row by assignment id.
 
 function collectFromGradesPage() {
-  const env = window.ENV;
-  if (!env || !Array.isArray(env.assignment_groups)) return null;
-
+  const env = window.ENV || {};
   const courseId = courseIdFromUrl();
   const course = courseName(env);
-  const submissionByAssignment = new Map();
+
+  const dueById = new Map();
+  const pointsById = new Map();
+  const typeById = new Map();
+  for (const group of env.assignment_groups || []) {
+    for (const assignment of group.assignments || []) {
+      const key = String(assignment.id);
+      dueById.set(key, assignment.due_at || null);
+      pointsById.set(key, typeof assignment.points_possible === "number" ? assignment.points_possible : null);
+      typeById.set(key, assignmentType(assignment));
+    }
+  }
+  const submissionById = new Map();
   for (const submission of env.submissions || []) {
-    submissionByAssignment.set(String(submission.assignment_id), submission);
+    submissionById.set(String(submission.assignment_id), submission);
   }
 
   const items = [];
-  for (const group of env.assignment_groups) {
-    for (const assignment of group.assignments || []) {
-      if (!assignment.due_at) continue;
-      const submission = submissionByAssignment.get(String(assignment.id));
+  for (const row of document.querySelectorAll("#grades_summary tr.student_assignment")) {
+    const link = row.querySelector('th.title a[href*="/assignments/"]');
+    const idSpan = row.querySelector(".assignment_id");
+    let assignmentId = idSpan ? idSpan.textContent.trim() : "";
+    if (!assignmentId && link) {
+      const match = (link.getAttribute("href") || "").match(/\/assignments\/(\d+)/);
+      assignmentId = match ? match[1] : "";
+    }
+    if (!assignmentId) continue;
+
+    const dueIso = dueById.get(assignmentId);
+    if (!dueIso) continue; // no due date -> can't place it on the calendar; skip
+
+    const submission = submissionById.get(assignmentId);
+    let submitted;
+    if (submission) {
+      submitted = submissionLooksSubmitted(submission);
+    } else {
+      // Fall back to the status Canvas printed in the row.
+      const statusText = (row.querySelector(".submission_status") || {}).textContent || "";
+      submitted = submittedStates.has(statusText.trim());
+    }
+
+    const title = (link && link.textContent.trim()) ||
+      (row.querySelector(".asset_processors_cell") || {}).dataset?.assignmentName || "Untitled";
+
+    items.push({
+      id: `assignment-${assignmentId}`,
+      title,
+      course,
+      courseId,
+      type: typeById.get(assignmentId) || "assignment",
+      dueAt: new Date(dueIso).toISOString(),
+      points: pointsById.has(assignmentId) ? pointsById.get(assignmentId) : null,
+      submitted,
+      missing: submission ? !!submission.missing : false,
+      url: link ? new URL(link.getAttribute("href"), location.origin).href
+                : (courseId ? `${location.origin}/courses/${courseId}/assignments/${assignmentId}` : null),
+    });
+  }
+
+  // Fallback: no table rows found but ENV has the data — push without names.
+  if (!items.length) {
+    for (const [assignmentId, dueIso] of dueById) {
+      if (!dueIso) continue;
+      const submission = submissionById.get(assignmentId);
       items.push({
-        id: `assignment-${assignment.id}`,
-        title: assignment.name || "Untitled",
+        id: `assignment-${assignmentId}`,
+        title: `Assignment ${assignmentId}`,
         course,
         courseId,
-        type: assignmentType(assignment),
-        dueAt: new Date(assignment.due_at).toISOString(),
-        points: typeof assignment.points_possible === "number" ? assignment.points_possible : null,
+        type: typeById.get(assignmentId) || "assignment",
+        dueAt: new Date(dueIso).toISOString(),
+        points: pointsById.get(assignmentId) ?? null,
         submitted: submissionLooksSubmitted(submission),
-        missing: !!(submission && submission.missing),
-        url: assignment.html_url ||
-          (courseId ? `${location.origin}/courses/${courseId}/assignments/${assignment.id}` : null),
+        missing: submission ? !!submission.missing : false,
+        url: courseId ? `${location.origin}/courses/${courseId}/assignments/${assignmentId}` : null,
       });
     }
   }
   return items;
 }
 
-// ---------- page: single Assignment ----------
+// ---------- page: single Assignment (Assignments 2.0 / React) ----------
+// ENV has the id, points and course, but not the due date, so this pushes a
+// status-only update: it never marks something un-submitted (that stays the grades
+// page's job), only confirms a submission when we can clearly see one.
 
-function readAssignmentDueIso(env) {
-  const fromEnv = env && env.ASSIGNMENT && env.ASSIGNMENT.due_at;
-  if (fromEnv) return new Date(fromEnv).toISOString();
-  // A machine-readable date Canvas leaves in the DOM, if present.
-  const timeNode = document.querySelector(".assignment .due_date_display time[datetime], time[datetime]");
+function readAssignmentDueIso() {
+  const timeNode = document.querySelector("time[datetime]");
   if (timeNode && timeNode.getAttribute("datetime")) {
     const parsed = new Date(timeNode.getAttribute("datetime"));
     if (!isNaN(parsed)) return parsed.toISOString();
   }
-  return null; // couldn't read a due date reliably: we'll send a status-only update
+  return null;
 }
 
-function assignmentLooksSubmitted(env) {
-  const submission = (env && (env.SUBMISSION || env.submission)) || null;
-  if (submissionLooksSubmitted(submission)) return true;
-  // Fall back to what the page shows in the sidebar.
-  const sidebar = document.querySelector("#sidebar_content, .assignment-submission, .submission-details, #assignment_show");
-  const text = (sidebar ? sidebar.textContent : "").toLowerCase();
-  return text.includes("submitted!") || text.includes("turned in") || text.includes("submission is now checked");
+function assignmentPageLooksSubmitted() {
+  // Conservative: only true when the page clearly shows a completed submission.
+  const bodyText = document.body.innerText || "";
+  return /\bSubmitted!\b/i.test(bodyText) || /\bTurned In\b/i.test(bodyText) ||
+    !!document.querySelector('[data-testid="submission-workflow-tracker-title"]');
 }
 
 function collectFromAssignmentPage() {
-  const env = window.ENV;
+  const env = window.ENV || {};
   const courseId = courseIdFromUrl();
-  const assignmentId = assignmentIdFromUrl();
+  const assignmentId = String(env.ASSIGNMENT_ID || assignmentIdFromUrl() || "");
   if (!assignmentId) return null;
 
-  const title =
-    (env && env.ASSIGNMENT && env.ASSIGNMENT.name) ||
-    (document.querySelector("h1.title, .assignment-title, h1") || {}).textContent?.trim() ||
-    "Untitled";
-
-  return {
+  const heading = document.querySelector("h1.title, h1, .assignment-title");
+  const item = {
     id: `assignment-${assignmentId}`,
-    title,
+    title: (heading && heading.textContent.trim()) || "Untitled",
     course: courseName(env),
     courseId,
     type: "assignment",
-    dueAt: readAssignmentDueIso(env), // may be null -> status-only update on the server
-    points: env && env.ASSIGNMENT && typeof env.ASSIGNMENT.points_possible === "number"
-      ? env.ASSIGNMENT.points_possible : null,
-    submitted: assignmentLooksSubmitted(env),
-    missing: false,
-    url: `${location.origin}/courses/${courseId}/assignments/${assignmentId}`,
+    dueAt: readAssignmentDueIso(), // usually null on A2 -> status-only update
+    points: typeof env.ASSIGNMENT_POINTS_POSSIBLE === "number" ? env.ASSIGNMENT_POINTS_POSSIBLE : null,
+    url: courseId ? `${location.origin}/courses/${courseId}/assignments/${assignmentId}` : null,
   };
+  // Only assert submitted=true when we can see it; never push submitted=false here.
+  if (assignmentPageLooksSubmitted()) item.submitted = true;
+  return item;
 }
 
-// When the student submits, update the tracker straight away (the reload then confirms).
+// When the student submits, mark it done straight away (the grades page confirms later).
 function hookSubmitButtons() {
   const courseId = courseIdFromUrl();
-  const assignmentId = assignmentIdFromUrl();
+  const assignmentId = String((window.ENV || {}).ASSIGNMENT_ID || assignmentIdFromUrl() || "");
   if (!assignmentId) return;
 
-  const markSubmitted = () => {
-    pushItems([{
-      id: `assignment-${assignmentId}`,
-      course: courseName(window.ENV),
-      courseId,
-      submitted: true, // status-only: no dueAt, so the server just flips the flag
-    }]).then(() => setPill("✓ Marked submitted", "#e94560")).catch(() => {});
-  };
+  const markSubmitted = () => pushItems([{
+    id: `assignment-${assignmentId}`,
+    course: courseName(window.ENV),
+    courseId,
+    submitted: true, // status-only: flips the flag on the item the grades page loaded
+  }]).then(() => setPill("✓ Marked submitted", "#e94560")).catch(() => {});
 
-  // Canvas' submission forms all have ids beginning "submit_"; quizzes use a start link.
+  // Classic submission forms have ids beginning "submit_".
   document.addEventListener("submit", (event) => {
     const form = event.target;
-    if (form && typeof form.id === "string" && form.id.startsWith("submit_")) {
-      setTimeout(markSubmitted, 400);
+    if (form && typeof form.id === "string" && form.id.startsWith("submit_")) setTimeout(markSubmitted, 500);
+  }, true);
+
+  // Assignments 2.0 uses React buttons; catch a click whose label looks like a submit.
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("button, [role='button'], a.btn");
+    if (!button) return;
+    const label = (button.textContent || "").trim().toLowerCase();
+    if (label === "submit assignment" || label === "submit" || label === "turn in" || label === "re-submit assignment") {
+      setTimeout(markSubmitted, 1200);
     }
   }, true);
-  const quizStart = document.querySelector("#take_quiz_link, a.take_quiz_link");
-  if (quizStart) quizStart.addEventListener("click", () => setTimeout(markSubmitted, 400));
 }
 
-// ---------- push to the local tracker (encrypted + token-signed) ----------
+// ---------- push to the local tracker (token-signed) ----------
 
 function pushItems(items) {
   return new Promise((resolve, reject) => {
@@ -187,7 +240,7 @@ function pushItems(items) {
       url: `${trackerBase}/api/sync`,
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${syncToken}` },
       data: JSON.stringify({ assignments: items }),
-      timeout: 8000,
+      timeout: 10000,
       onload: (response) => {
         if (response.status >= 200 && response.status < 300) {
           let parsed = {};
@@ -199,7 +252,7 @@ function pushItems(items) {
           reject(new Error(`tracker returned ${response.status}`));
         }
       },
-      onerror: () => reject(new Error("tracker not reachable / cert not trusted")),
+      onerror: () => reject(new Error("tracker not reachable")),
       ontimeout: () => reject(new Error("tracker timed out")),
     });
   });
@@ -228,11 +281,15 @@ function setPill(text, background) {
   if (background) pill.style.background = background;
 }
 
-async function runSync() {
-  const onGrades = /\/grades\/?$/.test(location.pathname) || location.pathname.endsWith("/grades");
-  const items = onGrades ? collectFromGradesPage() : (assignmentIdFromUrl() ? [collectFromAssignmentPage()] : null);
+const onGradesPage = () => /\/grades\/?$/.test(location.pathname);
 
-  if (!items || !items.length || !items[0]) {
+async function runSync() {
+  const items = onGradesPage() ? collectFromGradesPage()
+    : (assignmentIdFromUrl() ? [collectFromAssignmentPage()].filter(Boolean) : null);
+
+  if (debug) console.log("[tracker-sync]", location.pathname, "-> items:", items);
+
+  if (!items || !items.length) {
     setPill("⚠ No Canvas data on this page", "#252535");
     return;
   }
@@ -249,7 +306,8 @@ async function runSync() {
 // ---------- start ----------
 
 ensurePill();
-if (assignmentIdFromUrl() && !/\/grades/.test(location.pathname)) {
-  hookSubmitButtons();
-}
+if (assignmentIdFromUrl() && !onGradesPage()) hookSubmitButtons();
+
+// Sync shortly after load, and retry once if the page's data wasn't ready yet.
 setTimeout(runSync, 800);
+setTimeout(() => { if (onGradesPage()) runSync(); }, 3000);
