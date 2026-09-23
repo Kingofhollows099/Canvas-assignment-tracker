@@ -1,0 +1,43 @@
+services:
+  tracker:
+    build: .
+    image: canvas-assignment-tracker
+    container_name: canvas-assignment-tracker
+    restart: unless-stopped
+
+    # Secrets and settings come from .env (copy .env.docker.example to .env first).
+    env_file:
+      - .env
+
+    environment:
+      # Behind Nginx Proxy Manager, which terminates TLS and forwards plain HTTP here.
+      CANVAS_SOURCE: userscript
+      HOST: 0.0.0.0
+      PORT: "8000"
+      PUSH_STORE_PATH: /data/pushed_assignments.json
+      # Session cookies are marked Secure because the browser reaches you over HTTPS
+      # (via NPM). Set COOKIE_SECURE=0 in .env only if you test over plain http://.
+      COOKIE_SECURE: "1"
+
+    # Persist the browser-sync data across restarts and rebuilds.
+    volumes:
+      - tracker_data:/data
+
+    # Publish only to the host loopback; point your NPM proxy host at 127.0.0.1:8000.
+    # If NPM runs in Docker too, prefer putting both on a shared network (see below)
+    # and remove this ports mapping.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    # --- Option: share a Docker network with Nginx Proxy Manager ---
+    # Uncomment this and the top-level `networks:` block, remove `ports:` above, and
+    # in NPM forward to  http://canvas-assignment-tracker:8000
+    # networks:
+    #   - npm
+
+# networks:
+#   npm:
+#     external: true
+
+volumes:
+  tracker_data:

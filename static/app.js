@@ -236,12 +236,18 @@ async function loadAssignments(forceRefresh = false) {
   setStatus("Loading...");
   try {
     const response = await fetch("/api/assignments" + (forceRefresh ? "?refresh=1" : ""));
+    if (response.status === 401) {
+      // Session expired or not signed in: go to the login page.
+      location.href = "/login";
+      return;
+    }
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Server returned ${response.status}`);
     state.assignments = payload.assignments;
     state.fetchedAt = payload.fetchedAt;
     state.demo = payload.demo;
     state.mode = payload.mode || "canvas";
+    document.getElementById("logout").hidden = !payload.authEnabled;
     state.error = null;
     render();
     setStatus(statusSummary());
@@ -289,6 +295,10 @@ function init() {
     button.addEventListener("click", () => setView(button.dataset.view));
   }
   document.getElementById("refresh").addEventListener("click", () => loadAssignments(true));
+  document.getElementById("logout").addEventListener("click", async () => {
+    try { await fetch("/logout", { method: "POST" }); } catch (e) { /* ignore */ }
+    location.href = "/login";
+  });
   window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
   setupTooltip();
   setView(initialView);

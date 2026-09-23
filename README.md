@@ -71,6 +71,50 @@ Treat it like a password — it can do anything your Canvas account can. `.env` 
   token on `/api/sync`, so traffic to and from the userscript is encrypted and only your userscript can post. The
   `/api/sync` CORS allowance is scoped to `*.instructure.com` origins.
 
+## Running on a home server with Docker
+
+Run the tracker in a container and expose it through a reverse proxy such as
+**Nginx Proxy Manager (NPM)**, which handles HTTPS. Inside the container the app
+serves plain HTTP (NPM terminates TLS) and requires a **username/password login**
+for the web interface.
+
+```bash
+cp .env.docker.example .env      # then edit .env (see below)
+docker compose up -d --build
+```
+
+Point an NPM proxy host at the container (forward to `127.0.0.1:8000`, or to
+`http://canvas-assignment-tracker:8000` if you put both on a shared Docker network —
+see the commented section in `docker-compose.yml`). Enable NPM's SSL and, ideally,
+"Force SSL".
+
+Fill in `.env`:
+
+- `APP_USERNAME` + `APP_PASSWORD` — the sign-in you'll use in the browser. To avoid
+  storing the plaintext password, generate a hash and set `APP_PASSWORD_HASH` instead:
+  ```bash
+  docker compose run --rm tracker python server.py --hash-password
+  ```
+- `SYNC_TOKEN` — the bearer token the userscript sends. Generate one:
+  ```bash
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+  Put this same value (and your public `https://…` URL) in the userscript's
+  `syncToken` / `trackerBase`.
+
+Security built in:
+
+- The web UI and `/api/assignments` require a login session (HttpOnly, `SameSite=Lax`,
+  `Secure` cookies). Passwords are hashed with scrypt; failed logins are throttled.
+- `/api/sync` stays on its bearer token, since the userscript can't do a cookie login.
+- The server **refuses to bind to a public interface without a login configured**
+  (override only with `--allow-no-auth`).
+- Browser-sync data persists in the `tracker_data` volume.
+
+> Note: this is username/password auth, not passkeys — WebAuthn needs crypto this
+> dependency-free project can't do in the standard library. Put the app behind your
+> proxy's own access control if you want a second factor.
+
 ## Tests
 
 ```bash

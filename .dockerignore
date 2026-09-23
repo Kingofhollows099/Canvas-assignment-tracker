@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+tests/
+certs/
+.env
+.sync_token
+pushed_assignments.json
+pushed_assignments.json.tmp
+*.md
+userscript/*.md
