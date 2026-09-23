@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Canvas Assignment Tracker Sync
 // @namespace    canvas-assignment-tracker
-// @version      2.1.0
+// @version      2.2.0
 // @description  Reads the assignments Canvas already loaded on your grades and assignment pages and pushes them, encrypted, to your local Assignment Tracker. Submitting an assignment updates it immediately.
 // @match        https://*.instructure.com/courses/*/grades*
 // @match        https://*.instructure.com/courses/*/assignments/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      *
 // @noframes
 // ==/UserScript==
@@ -29,6 +30,11 @@ const syncToken = "PASTE_YOUR_SYNC_TOKEN_HERE"; // the SYNC_TOKEN the server/.en
 "use strict";
 
 const debug = true; // logs a one-line summary to the browser console; set false to quiet it
+
+// Canvas puts its data on the PAGE's window (window.ENV). Violentmonkey runs this
+// script in an isolated world with its own empty window, so we reach the page's real
+// window through unsafeWindow. The DOM is shared, so document queries need no change.
+const pageWindow = (typeof unsafeWindow !== "undefined") ? unsafeWindow : window;
 
 // ---------- generic helpers ----------
 
@@ -74,7 +80,7 @@ function assignmentType(assignment) {
 // submitted status come from window.ENV, matched to each row by assignment id.
 
 function collectFromGradesPage() {
-  const env = window.ENV || {};
+  const env = pageWindow.ENV || {};
   const courseId = courseIdFromUrl();
   const course = courseName(env);
 
@@ -180,7 +186,7 @@ function assignmentPageLooksSubmitted() {
 }
 
 function collectFromAssignmentPage() {
-  const env = window.ENV || {};
+  const env = pageWindow.ENV || {};
   const courseId = courseIdFromUrl();
   const assignmentId = String(env.ASSIGNMENT_ID || assignmentIdFromUrl() || "");
   if (!assignmentId) return null;
@@ -204,12 +210,12 @@ function collectFromAssignmentPage() {
 // When the student submits, mark it done straight away (the grades page confirms later).
 function hookSubmitButtons() {
   const courseId = courseIdFromUrl();
-  const assignmentId = String((window.ENV || {}).ASSIGNMENT_ID || assignmentIdFromUrl() || "");
+  const assignmentId = String((pageWindow.ENV || {}).ASSIGNMENT_ID || assignmentIdFromUrl() || "");
   if (!assignmentId) return;
 
   const markSubmitted = () => pushItems([{
     id: `assignment-${assignmentId}`,
-    course: courseName(window.ENV),
+    course: courseName(pageWindow.ENV),
     courseId,
     submitted: true, // status-only: flips the flag on the item the grades page loaded
   }]).then(() => setPill("✓ Marked submitted", "#e94560")).catch(() => {});
