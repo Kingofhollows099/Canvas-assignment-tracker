@@ -15,8 +15,9 @@ RUN useradd --uid 10001 --create-home appuser \
     && chown -R appuser:appuser /data /app
 USER appuser
 
-# Where the browser-sync store is kept; mount a volume here to persist it.
+# Where the data stores are kept; mount a volume at /data to persist them.
 ENV PUSH_STORE_PATH=/data/pushed_assignments.json \
+    MANUAL_STORE_PATH=/data/manual_assignments.json \
     HOST=0.0.0.0 \
     PORT=8000 \
     CANVAS_SOURCE=userscript

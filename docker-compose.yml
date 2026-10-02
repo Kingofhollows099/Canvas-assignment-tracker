@@ -15,6 +15,7 @@ services:
       HOST: 0.0.0.0
       PORT: "8000"
       PUSH_STORE_PATH: /data/pushed_assignments.json
+      MANUAL_STORE_PATH: /data/manual_assignments.json
       # Session cookies are marked Secure because the browser reaches you over HTTPS
       # (via NPM). Set COOKIE_SECURE=0 in .env only if you test over plain http://.
       COOKIE_SECURE: "1"

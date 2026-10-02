@@ -17,11 +17,41 @@
             data-tip="To-do&#10;Everything outstanding, soonest due first">📋</button>
   </nav>
   <span class="divider" aria-hidden="true"></span>
+  <button type="button" class="toggle" id="add" aria-label="Add a custom assignment"
+          data-tip="Add&#10;Add a custom assignment">＋</button>
   <button type="button" class="run" id="refresh" aria-label="Refresh from Canvas"
           data-tip="Refresh&#10;Fetch the latest assignments from Canvas">↻</button>
   <button type="button" class="toggle logout" id="logout" aria-label="Sign out"
           data-tip="Sign out&#10;End your session" hidden>⎋</button>
 </header>
+
+<div class="modal" id="add-modal" hidden>
+  <form class="modal-card" id="add-form">
+    <h2>Add assignment</h2>
+    <label>Title
+      <input name="title" type="text" maxlength="200" required autocomplete="off">
+    </label>
+    <label>Course
+      <input name="course" type="text" maxlength="100" placeholder="e.g. Study Group" autocomplete="off">
+    </label>
+    <div class="field-row">
+      <label>Due date
+        <input name="date" type="date" required>
+      </label>
+      <label>Due time
+        <input name="time" type="time" value="23:59" required>
+      </label>
+    </div>
+    <label>Points <span class="muted">(optional)</span>
+      <input name="points" type="number" min="0" step="any" inputmode="decimal">
+    </label>
+    <div class="modal-error" id="add-error" hidden></div>
+    <div class="modal-actions">
+      <button type="button" class="btn-ghost" id="add-cancel">Cancel</button>
+      <button type="submit" class="btn-primary">Add</button>
+    </div>
+  </form>
+</div>
 
 <main id="main">
   <section id="calendar-view" class="calendar" aria-label="Next 7 days" hidden></section>
