@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import auth
 import canvas_client
 import tls_setup
+from manual_store import ManualStore
 from push_store import PushStore
 
 appDir = Path(__file__).resolve().parent
@@ -32,6 +33,7 @@ staticDir = appDir / "static"
 # Requests over this many bytes are refused before we read the body.
 maxSyncBodyBytes = 4 * 1024 * 1024
 maxLoginBodyBytes = 16 * 1024
+maxManualBodyBytes = 16 * 1024
 
 # Static files served to a logged-in browser. The login page is handled separately
 # because it must be reachable without a session.
@@ -114,6 +116,7 @@ contentSecurityPolicy = (
 class TrackerHandler(BaseHTTPRequestHandler):
     assignmentCache = None
     pushStore = None          # set only in userscript mode
+    manualStore = None        # user-added custom assignments (always available)
     mode = "canvas"
     allowedOrigin = ""
     syncToken = ""            # shared bearer token required to POST /api/sync
@@ -170,6 +173,14 @@ class TrackerHandler(BaseHTTPRequestHandler):
         except canvas_client.CanvasError as canvasError:
             self.sendJson(canvasError.statusCode, {"error": str(canvasError)})
             return
+        # Merge in the user's manually-added assignments (kept outside the cache so
+        # adds/deletes show up immediately).
+        manualItems = self.manualStore.getAll() if self.manualStore else []
+        if manualItems:
+            merged = list(responsePayload["assignments"]) + manualItems
+            merged.sort(key=lambda item: item["dueAt"])
+            responsePayload["assignments"] = merged
+
         responsePayload["demo"] = self.mode == "demo"
         responsePayload["mode"] = self.mode
         responsePayload["authEnabled"] = self.authEnabled
@@ -196,8 +207,35 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self.handleLogout()
         elif path == "/api/sync":
             self.handleSync()
+        elif path == "/api/manual":
+            self.handleManualAdd()
+        elif path == "/api/manual/delete":
+            self.handleManualDelete()
         else:
             self.sendJson(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+    def handleManualAdd(self):
+        # A signed-in-user action (session cookie), not the userscript's bearer token.
+        if not self.requireSessionForApi():
+            return
+        requestBody = self.readJsonBody(maxManualBodyBytes)
+        if requestBody is None:
+            return
+        try:
+            item = self.manualStore.add(requestBody)
+        except (AttributeError, ValueError, TypeError) as addError:
+            self.sendJson(HTTPStatus.BAD_REQUEST, {"error": str(addError) or "Bad request."})
+            return
+        self.sendJson(HTTPStatus.OK, {"added": item})
+
+    def handleManualDelete(self):
+        if not self.requireSessionForApi():
+            return
+        requestBody = self.readJsonBody(maxManualBodyBytes)
+        if requestBody is None:
+            return
+        deleted = self.manualStore.delete((requestBody or {}).get("id"))
+        self.sendJson(HTTPStatus.OK, {"deleted": deleted})
 
     def handleSync(self):
         if self.pushStore is None:
@@ -497,6 +535,8 @@ def main():
     else:
         fetchFunction = buildCanvasFetch()
 
+    manualStorePath = Path(os.environ.get("MANUAL_STORE_PATH", appDir / "manual_assignments.json"))
+    TrackerHandler.manualStore = ManualStore(manualStorePath)
     TrackerHandler.assignmentCache = AssignmentCache(fetchFunction, int(os.environ.get("CACHE_SECONDS", "300")))
     TrackerHandler.mode = mode
     TrackerHandler.allowedOrigin = os.environ.get("CANVAS_BASE_URL", "").strip().rstrip("/")

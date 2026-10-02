@@ -50,6 +50,10 @@ Treat it like a password — it can do anything your Canvas account can. `.env` 
   for the userscript to push assignments to.
 - `push_store.py` – validates and stores the assignments pushed from the browser, keyed by
   Canvas assignment id, with each item's course id and name (browser-sync mode).
+- `manual_store.py` – stores custom assignments you add yourself in the web UI (the **＋**
+  button): a title, a course name of your choosing, a due date/time and optional points.
+  They persist to `MANUAL_STORE_PATH` and merge into both views; a ✕ on the card removes one.
+  Adding/removing requires a signed-in session.
 - `tls_setup.py` – generates the self-signed localhost certificate and the shared sync token
   that encrypt and authenticate browser-sync traffic.
 - `userscript/` – the Violentmonkey userscript and its setup guide for browser-sync mode.

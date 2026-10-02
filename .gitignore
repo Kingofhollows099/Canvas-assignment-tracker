@@ -10,3 +10,7 @@ pushed_assignments.json.tmp
 # Browser-sync secrets: the shared token and the self-signed TLS certificate
 .sync_token
 certs/
+
+# User-added custom assignments
+manual_assignments.json
+manual_assignments.json.tmp

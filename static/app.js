@@ -68,6 +68,28 @@ function dueAnchor(date) {
   return dayAnchor(y, m, d);
 }
 
+// The offset (ms) of a timezone at a given instant, DST included.
+function tzOffsetMs(date, tz) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const parts = {};
+  for (const part of dtf.formatToParts(date)) parts[part.type] = part.value;
+  const asIfUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return asIfUtc - date.getTime();
+}
+
+// Interpret a wall-clock date+time as being in the display timezone, return UTC ISO.
+// So "11:59 PM" entered by the user means 11:59 PM Central, stored correctly as UTC.
+function wallTimeToUtcIso(dateStr, timeStr, tz) {
+  const [y, mo, d] = dateStr.split("-").map(Number);
+  const [h, mi] = timeStr.split(":").map(Number);
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  const offset = tzOffsetMs(new Date(guess), tz);
+  return new Date(guess - offset).toISOString();
+}
+
 function relativeDue(dueDate, now) {
   const diffMin = Math.round((dueDate - now) / 60000);
   const absMin = Math.abs(diffMin);
@@ -119,7 +141,32 @@ function makeCard(item, now, { showTime = true } = {}) {
   if (item.missing) tipLines.push("Marked missing in Canvas.");
   if (safeUrl) tipLines.push("Click to open in Canvas.");
   card.dataset.tip = tipLines.join("\n");
+  if (item.manual) card.append(makeDeleteButton(item));
   return card;
+}
+
+function makeDeleteButton(item) {
+  const del = el("button", "card-del", "✕");
+  del.type = "button";
+  del.title = "Remove custom assignment";
+  del.setAttribute("aria-label", "Remove " + item.title);
+  del.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    deleteManual(item.id);
+  });
+  return del;
+}
+
+async function deleteManual(id) {
+  try {
+    await fetch("/api/manual/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+  } catch (e) { /* ignore; the reload will show the real state */ }
+  loadAssignments(true);
 }
 
 // ---------- calendar view ----------
@@ -215,6 +262,7 @@ function renderTodo(now) {
     course.textContent = [item.course, typeLabel(item.type)].filter(Boolean).join(" · ");
 
     row.replaceChildren(when, main, el("div", "todo-points", pointsLabel(item.points)));
+    if (item.manual) row.append(makeDeleteButton(item));
 
     const listItem = el("li");
     listItem.append(row);
@@ -325,6 +373,60 @@ function setupTooltip() {
   document.addEventListener("scroll", hideTooltip, true);
 }
 
+// ---------- add custom assignment ----------
+
+function setupAddForm() {
+  const modal = document.getElementById("add-modal");
+  const form = document.getElementById("add-form");
+  const errorBox = document.getElementById("add-error");
+
+  const showError = (message) => { errorBox.textContent = "⚠  " + message; errorBox.hidden = false; };
+  const open = () => {
+    form.reset();
+    errorBox.hidden = true;
+    if (!form.elements.time.value) form.elements.time.value = "23:59";
+    modal.hidden = false;
+    form.elements.title.focus();
+  };
+  const close = () => { modal.hidden = true; };
+
+  document.getElementById("add").addEventListener("click", open);
+  document.getElementById("add-cancel").addEventListener("click", close);
+  modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !modal.hidden) close(); });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fields = form.elements;
+    const title = fields.title.value.trim();
+    const date = fields.date.value;
+    const time = fields.time.value;
+    if (!title || !date || !time) { showError("Title, date and time are required."); return; }
+
+    let dueAt;
+    try { dueAt = wallTimeToUtcIso(date, time, displayTz); } catch (e) { showError("That date/time isn't valid."); return; }
+
+    const pointsText = fields.points.value.trim();
+    const points = pointsText === "" || Number.isNaN(Number(pointsText)) ? null : Number(pointsText);
+    const body = { title, course: fields.course.value.trim(), dueAt, points };
+
+    try {
+      const response = await fetch("/api/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (response.status === 401) { location.href = "/login"; return; }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not add the assignment.");
+      close();
+      loadAssignments(true);
+    } catch (e) {
+      showError(e.message);
+    }
+  });
+}
+
 // ---------- start ----------
 
 function init() {
@@ -340,6 +442,7 @@ function init() {
     try { await fetch("/logout", { method: "POST" }); } catch (e) { /* ignore */ }
     location.href = "/login";
   });
+  setupAddForm();
   window.addEventListener("hashchange", () => setView(location.hash.slice(1)));
   setupTooltip();
   setView(initialView);

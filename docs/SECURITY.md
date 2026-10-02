@@ -28,6 +28,7 @@ Status legend: **PASS** (handled), **FIXED** (addressed in this review),
 - [x] **PASS** The app refuses to bind a public interface with no login configured (`--allow-no-auth` required to override).
 - [x] **PASS** `/api/sync` is authorized by a separate bearer token (a browser userscript cannot do a cookie login); the token is compared in constant time.
 - [x] **PASS** `/login` and `/login.js` are the only pre-auth resources, and both are static and non-sensitive.
+- [x] **PASS** The custom-assignment endpoints (`POST /api/manual`, `POST /api/manual/delete`) require a valid session; they do not accept the sync bearer token. Input is validated and bounded (title required, due date parsed, item count capped). CSRF is mitigated by the `SameSite=Lax` session cookie (a cross-site POST carries no cookie), consistent with the rest of the app.
 
 ## 3. CSRF
 
