@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Canvas Assignment Tracker Sync
 // @namespace    canvas-assignment-tracker
-// @version      2.3.0
+// @version      2.4.0
 // @description  Reads the assignments Canvas already loaded on your grades and assignment pages and pushes them, encrypted, to your local Assignment Tracker. Submitting an assignment updates it immediately.
 // @match        https://*.instructure.com/courses/*/grades*
 // @match        https://*.instructure.com/courses/*/assignments/*
@@ -72,6 +72,9 @@ const submittedStates = new Set(["submitted", "graded", "pending_review", "compl
 function submissionLooksSubmitted(submission) {
   if (!submission) return false;
   if (submission.excused || submission.submitted_at) return true;
+  // A non-zero grade means it's done, even if Canvas never logged a submission
+  // (e.g. in-class/on-paper work). A score of 0 does NOT count as done.
+  if (typeof submission.score === "number" && submission.score !== 0) return true;
   return submittedStates.has(submission.workflow_state);
 }
 
@@ -126,9 +129,11 @@ function collectFromGradesPage() {
     if (submission) {
       submitted = submissionLooksSubmitted(submission);
     } else {
-      // Fall back to the status Canvas printed in the row.
+      // Fall back to what Canvas printed in the row: its status, or a non-zero score.
       const statusText = (row.querySelector(".submission_status") || {}).textContent || "";
-      submitted = submittedStates.has(statusText.trim());
+      const scoreText = (row.querySelector(".original_score") || {}).textContent || "";
+      const score = parseFloat(scoreText);
+      submitted = submittedStates.has(statusText.trim()) || (!Number.isNaN(score) && score !== 0);
     }
 
     const title = (link && link.textContent.trim()) ||
