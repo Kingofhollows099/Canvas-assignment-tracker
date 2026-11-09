@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Canvas Assignment Tracker Sync
 // @namespace    canvas-assignment-tracker
-// @version      2.5.0
+// @version      2.6.0
 // @description  Reads the assignments Canvas already loaded on your grades and assignment pages and pushes them, encrypted, to your local Assignment Tracker. Submitting an assignment updates it immediately.
 // @match        https://*.instructure.com/courses/*/grades*
 // @match        https://*.instructure.com/courses/*/assignments/*
@@ -69,23 +69,33 @@ function courseName(env) {
 // Canvas marks work as done under several workflow states; treat them all as submitted.
 const submittedStates = new Set(["submitted", "graded", "pending_review", "complete", "graded_online"]);
 
-function submissionLooksSubmitted(submission) {
-  if (!submission) return false;
-  if (submission.excused || submission.submitted_at) return true;
-  // A non-zero grade means it's done, even if Canvas never logged a submission
-  // (e.g. in-class/on-paper work). A score of 0 does NOT count as done.
-  if (typeof submission.score === "number" && submission.score !== 0) return true;
-  return submittedStates.has(submission.workflow_state);
+// The effective score for a row: Canvas' ENV value if present, else what the grades
+// table printed (quizzes often show a score in the row that ENV.submissions lacks).
+// Returns a number, or null when there is no grade yet.
+function effectiveScore(submission, row) {
+  if (submission && typeof submission.score === "number") return submission.score;
+  const scoreText = row ? (row.querySelector(".original_score") || {}).textContent || "" : "";
+  const parsed = parseFloat(scoreText);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
-// What the grades-table row itself shows: a submitted/graded status, or a non-zero
-// score. Some items (notably quizzes) show a score here that ENV.submissions lacks.
-function rowLooksSubmitted(row) {
-  const statusText = ((row.querySelector(".submission_status") || {}).textContent || "").trim();
-  if (submittedStates.has(statusText)) return true;
-  const scoreText = (row.querySelector(".original_score") || {}).textContent || "";
-  const score = parseFloat(scoreText);
-  return !Number.isNaN(score) && score !== 0;
+// Positive evidence the work was turned in, ignoring the grade.
+function hasSubmissionSignal(submission, row) {
+  if (submission && (submission.excused || submission.submitted_at)) return true;
+  if (submission && submittedStates.has(submission.workflow_state)) return true;
+  const statusText = row ? ((row.querySelector(".submission_status") || {}).textContent || "").trim() : "";
+  return submittedStates.has(statusText);
+}
+
+// Whether an assignment counts as done:
+//   - graded with a non-zero score  -> done
+//   - graded exactly 0              -> NOT done (a 0 stays on the list; a retake may
+//                                      still improve it, and we can't see attempts left)
+//   - no grade yet but turned in    -> done (submitted/ungraded work drops off)
+function computeSubmitted(submission, row) {
+  const score = effectiveScore(submission, row);
+  if (score !== null) return score !== 0;
+  return hasSubmissionSignal(submission, row);
 }
 
 function assignmentType(assignment) {
@@ -134,10 +144,8 @@ function collectFromGradesPage() {
     const dueIso = dueById.get(assignmentId);
     if (!dueIso) continue; // no due date -> can't place it on the calendar; skip
 
-    // Done if ENV says so, OR if the grades table row itself shows it done — the two
-    // can disagree (e.g. quizzes whose score renders in the row but is null in ENV).
     const submission = submissionById.get(assignmentId);
-    const submitted = submissionLooksSubmitted(submission) || rowLooksSubmitted(row);
+    const submitted = computeSubmitted(submission, row);
 
     const title = (link && link.textContent.trim()) ||
       (row.querySelector(".asset_processors_cell") || {}).dataset?.assignmentName || "Untitled";
@@ -170,7 +178,7 @@ function collectFromGradesPage() {
         type: typeById.get(assignmentId) || "assignment",
         dueAt: new Date(dueIso).toISOString(),
         points: pointsById.get(assignmentId) ?? null,
-        submitted: submissionLooksSubmitted(submission),
+        submitted: computeSubmitted(submission, null),
         missing: submission ? !!submission.missing : false,
         url: courseId ? `${location.origin}/courses/${courseId}/assignments/${assignmentId}` : null,
       });
