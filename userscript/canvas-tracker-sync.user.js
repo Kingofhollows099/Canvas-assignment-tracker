@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Canvas Assignment Tracker Sync
 // @namespace    canvas-assignment-tracker
-// @version      2.4.0
+// @version      2.5.0
 // @description  Reads the assignments Canvas already loaded on your grades and assignment pages and pushes them, encrypted, to your local Assignment Tracker. Submitting an assignment updates it immediately.
 // @match        https://*.instructure.com/courses/*/grades*
 // @match        https://*.instructure.com/courses/*/assignments/*
@@ -78,6 +78,16 @@ function submissionLooksSubmitted(submission) {
   return submittedStates.has(submission.workflow_state);
 }
 
+// What the grades-table row itself shows: a submitted/graded status, or a non-zero
+// score. Some items (notably quizzes) show a score here that ENV.submissions lacks.
+function rowLooksSubmitted(row) {
+  const statusText = ((row.querySelector(".submission_status") || {}).textContent || "").trim();
+  if (submittedStates.has(statusText)) return true;
+  const scoreText = (row.querySelector(".original_score") || {}).textContent || "";
+  const score = parseFloat(scoreText);
+  return !Number.isNaN(score) && score !== 0;
+}
+
 function assignmentType(assignment) {
   const types = (assignment && assignment.submission_types) || [];
   if (types.includes("online_quiz")) return "quiz";
@@ -124,17 +134,10 @@ function collectFromGradesPage() {
     const dueIso = dueById.get(assignmentId);
     if (!dueIso) continue; // no due date -> can't place it on the calendar; skip
 
+    // Done if ENV says so, OR if the grades table row itself shows it done — the two
+    // can disagree (e.g. quizzes whose score renders in the row but is null in ENV).
     const submission = submissionById.get(assignmentId);
-    let submitted;
-    if (submission) {
-      submitted = submissionLooksSubmitted(submission);
-    } else {
-      // Fall back to what Canvas printed in the row: its status, or a non-zero score.
-      const statusText = (row.querySelector(".submission_status") || {}).textContent || "";
-      const scoreText = (row.querySelector(".original_score") || {}).textContent || "";
-      const score = parseFloat(scoreText);
-      submitted = submittedStates.has(statusText.trim()) || (!Number.isNaN(score) && score !== 0);
-    }
+    const submitted = submissionLooksSubmitted(submission) || rowLooksSubmitted(row);
 
     const title = (link && link.textContent.trim()) ||
       (row.querySelector(".asset_processors_cell") || {}).dataset?.assignmentName || "Untitled";
